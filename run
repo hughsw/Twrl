@@ -1,0 +1,6 @@
+#!/bin/bash -eu
+
+# Workaround: https://github.com/docker/for-mac/issues/2076
+docker run --rm --privileged alpine hwclock -s
+
+exec docker run -it --rm  --env BINANCE_API_KEY=${BINANCE_API_KEY:-DUMMY_KEY} --env BINANCE_API_SECRET=${BINANCE_API_SECRET:-DUMMY_SECRET}  twrl
