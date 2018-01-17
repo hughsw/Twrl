@@ -19,8 +19,8 @@ api_key, api_secret = map(os.environ.get, 'BINANCE_API_KEY  BINANCE_API_SECRET'.
 
 #api_key = os.environ['
 #api_secret = os.environ['
-msg('api_key:', api_key)
-msg('api_secret:', api_secret)
+#msg('api_key:', api_key)
+#msg('api_secret:', api_secret)
 #sys.exit()
 
 
@@ -49,52 +49,22 @@ kline_intervals = tuple((helpers.interval_to_milliseconds(token), token) for tok
 #msg('kline_intervals:', dumps(kline_intervals))
 #sys.exit()
 
+class attrdict(dict):
+    def __getattr__(self, name): return self[name]
+    def __setattr__(self, name, value): self[name] = value
+
 # Take a sequence of dicts and return a dict of the dicts, where the
 # key in the outer dict is the value at that key in each inner dict
-def normalize(key, seq): return dict((item[key], item) for item in seq)
+def normalize(key, seq): return attrdict((item[key], attrdict(item)) for item in seq)
 
 
 client = Client(api_key, api_secret, {'timeout': 10})
 
 
-class throttler(object):
-    def __init__(self, interval):
-        self.interval = interval
-        self.wait_until = time.monotonic()
-
-    def __enter__(self):
-        delay = self.wait_until - time.monotonic()
-        if delay > 0:
-            time.sleep(delay)
-        return self.wait_until, delay
-
-    def __exit__(self, *exc):
-        self.wait_until = time.monotonic() + self.interval
-        return False
-
-def make_throttle(interval):
-
-    next_time = [time.monotonic()]
-    @contextlib.contextmanager
-    def throttle():
-        wait_until = next_time[0]
-        delay = wait_until - time.monotonic()
-        if delay > 0:
-            time.sleep(delay)
-
-
-
-# seconds between calls at 8 per second
-THROTTLE_INTERVAL = 1 / 8 # Python 3
-# seconds between calls at 32 calls per 3 seconds (just under 10 / sec)
-THROTTLE_INTERVAL = 3 / 32 # Python 3
-#next_time = [time.monotonic()]
-
-throttle = throttler(THROTTLE_INTERVAL)
 
 
 msg()
-with throttle: pass
+
 msg('ping:', dumps(client.ping()))
 msg()
 
@@ -104,7 +74,7 @@ def get_it(item_name, msg=None, **kwargs):
     getter = getattr(client, attr)
     msg and msg('get_it():', dumps(dict(attr=attr, kwargs=kwargs)))
 
-    with throttle as (wait_until, delay): pass
+    #with throttle as (wait_until, delay): pass
     if False:
         wait_until = next_time[0]
         delay = wait_until - time.monotonic()
@@ -121,7 +91,8 @@ def get_it(item_name, msg=None, **kwargs):
 
     #next_time[0] = call_start_time + THROTTLE_INC
 
-    timing = dict(call=attr, call_start_time=call_start_time, delay=delay, delta=call_start_time-wait_until, calltime=call_end_time-call_start_time)
+    #timing = dict(call=attr, call_start_time=call_start_time, delay=delay, delta=call_start_time-wait_until, calltime=call_end_time-call_start_time)
+    timing = dict(call=attr, call_start_time=call_start_time, calltime=call_end_time-call_start_time)
     timings.append(timing)
 
     msg and msg(item_name +':', dumps(item))
@@ -129,9 +100,102 @@ def get_it(item_name, msg=None, **kwargs):
 
 
 #get_it('server_time')
-timing_sync = get_it('server_time')
-timing_sync['hostTime'] = int(1000*time.time())
+timing_sync = attrdict(get_it('server_time'))
+timing_sync.hostTime = int(1000*time.time())
+timing_sync.diff = timing_sync.hostTime - timing_sync.serverTime
 msg('timing_sync:', dumps(timing_sync))
+
+class Asset(attrdict):
+    __slots__ = ()
+    def __init__(self, asset_name):
+        self.asset = asset_name
+
+def make_symbol(base_asset, quote_asset): return base_asset + quote_asset
+
+class Exchange():
+    BOGUS_SYMBOLS = '123 456'.split()
+
+    @staticmethod
+    def useful_symbol(symbol):
+        return (True
+                and symbol['symbol'] != '123456'
+                and symbol['status'].lower() == 'TRADING'.lower()
+                and symbol['quoteAsset'] not in Exchange.BOGUS_SYMBOLS
+                and symbol['baseAsset'] not in Exchange.BOGUS_SYMBOLS
+        )
+
+    def __init__(self, client):
+        self.client = client
+
+        exchange_info = self.client.get_exchange_info()
+        #msg('exchange_info:', dumps(exchange_info))
+        all_tickers = normalize('symbol', (ticker for ticker in self.client.get_all_tickers() if ticker['symbol'] != '123456'))
+        for ticker in all_tickers.values():
+            ticker.direction = 'sell'
+        msg('all_tickers:', dumps(all_tickers))
+        #sys.exit()
+
+        symbols_full = exchange_info['symbols']
+        #symbols_clean = dict((symbol['symbol'], symbol) for symbol in symbols_full if self.useful_symbol(symbol))
+        self.symbols_clean = symbols_clean = normalize('symbol', (symbol for symbol in symbols_full if self.useful_symbol(symbol)))
+
+        msg('len full clean:', len(symbols_full), len(symbols_clean))
+
+        msg('symbols_full:', dumps(symbols_full))
+        msg('symbols_clean:', dumps(symbols_clean))
+
+        buys = attrdict()
+        for symbol, ticker in all_tickers.items():
+            lobmys = make_symbol(*reversed(self.unmake_symbol(symbol)))
+            rekcit = attrdict(symbol=lobmys, price='%.8f' % (1 / float(ticker.price)), direction='buy')
+            buys[lobmys] = rekcit
+        msg('buys:', dumps(buys))
+
+
+        sys.exit()
+
+        quote_assets = frozenset(symbol.quoteAsset for symbol in symbols_clean.values())
+        base_assets = frozenset(symbol.baseAsset for symbol in symbols_clean.values())
+        msg('quote_assets:', dumps(sorted(quote_assets)))
+        msg('base_assets:', dumps(sorted(base_assets)))
+
+        assets = attrdict((asset, Asset(asset)) for asset in quote_assets | base_assets)
+        for asset in assets.values():
+            asset_name = asset.asset
+            asset.quoted_by = tuple(quote_asset for quote_asset in quote_assets if make_symbol(asset_name, quote_asset) in symbols_clean)
+            asset.quotes = tuple(base_asset  for base_asset in base_assets if make_symbol(base_asset, asset_name)  in symbols_clean)
+
+        msg('assets:', dumps(assets))
+
+        #quote_assets = tuple(sorted(set(symbol['quoteAsset'] for symbol in symbols_full if symbol['quoteAsset'] not in self.BOGUS_SYMBOLS)))
+        #trade_quote_assets = tuple(sorted(set(TRADE_QUOTE_ASSETS)))
+        #base_assets = tuple(sorted(set(symbol['baseAsset'] for symbol in symbols_full if symbol['quoteAsset'] not in self.BOGUS_SYMBOLS)))
+        #symbols = tuple(sorted(set(symbol['symbol'] for symbol in symbols_full)))
+
+        self.all_tickers = all_tickers
+        self.quote_assets = quote_assets
+        self.base_assets = base_assets
+        self.assets = assets
+
+
+    def unmake_symbol(self, symbol):
+        sym = self.symbols_clean[symbol]
+        return sym.baseAsset, sym.quoteAsset
+
+    def min_path(self, asset1, asset2):
+        assert asset1 in self.assets, str(asset1)
+        assert asset2 in self.assets, str(asset2)
+        cost = 0
+        if asset1 == asset2: return cost
+
+
+
+
+exchange = Exchange(client)
+msg('dir(exchange):', dir(exchange))
+msg('min_path(VEN, VEN):', dumps(exchange.min_path('VEN', 'VEN')))
+msg('min_path(VEN, ADA):', dumps(exchange.min_path('VEN', 'ADA')))
+sys.exit()
 
 if False:
     timing_sync2 = get_it('server_time')
@@ -205,6 +269,9 @@ def get_exchange():
 #sys.exit()
 
 exchange = get_exchange()
+msg()
+msg('exchange:', dumps(exchange))
+sys.exit()
 
 # symbol='ADAETH' -> baseAsset='ADA', quoteAsset='ETH'
 assets_by_symbol = dict(('{}{}'.format(base_asset, quote_asset), dict(baseAsset=base_asset, quoteAsset=quote_asset))
